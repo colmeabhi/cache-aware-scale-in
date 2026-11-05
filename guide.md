@@ -354,7 +354,30 @@ Grafana.** kube-state-metrics does not expose arbitrary annotations, and
 reading them through Grafana would need another exporter. The controller
 already knows the numbers; publishing them is 80 lines (`metrics_exporter.py`).
 
-### 4.14 Limitations and next steps
+### 4.14 Running hands-free: the cloud layer and the built-in router
+
+**Decision.** `cloud/run_remote.sh` drives any SSH-reachable GPU box: copy
+the repo, `bootstrap.sh` (NVIDIA container toolkit, k3s, RuntimeClass,
+device plugin), run `run_day.sh` detached, fetch results, destroy. Providers
+are a three-function contract (`create`, `wait_ip`, `destroy`). A GitHub
+workflow does the same from secrets.
+
+**Why SSH + k3s rather than a managed Kubernetes.** Every GPU cloud sells
+a VM with drivers; few sell managed Kubernetes with GPU nodes, and those
+that do differ in every detail. One bootstrap script on Ubuntu is portable.
+
+**Why a built-in router.** The benchmark needs pods to hold *different*
+prefixes. llm-d provides prefix-aware routing but is not installed by the
+bootstrap. `cacheaware/router.py` is a consistent-hash router keyed on the
+first 512 characters of the prompt: same system prompt, same pod. On
+scale-in only the removed pod's keys move. It is explicitly a stand-in: with
+llm-d available, set `GATEWAY_URL` and it is not used.
+
+**What is not automated.** llm-d itself, and the provider adapter for any
+specific cloud (the template shows the shape). The layer has not been
+executed end to end here; see cloud/README.md, "Honest status".
+
+### 4.15 Limitations and next steps
 
 - The cost is at most 5 s stale; a sudden traffic shift can beat it.
 - `pod-deletion-cost` is best-effort by design and only orders pods of the
@@ -575,6 +598,10 @@ Or phase by phase:
 | 5 | `stage5_benchmark/dashboard.sh` in pane 2, then `stage5_benchmark/eval.sh` | 50-60 min | `PASS: benchmark data is usable`, numbers printed |
 | 6 | read `results/RESULTS.md`; `git add results && git commit` | 5 min | |
 | 7 | `kubectl scale deploy -n $NAMESPACE $DEPLOYMENT --replicas=0`; `stage6_final/nbody_a100.sh` | 60-70 min | README results section filled; branch ready to push |
+
+Hands-free alternative: fill `cloud/.env` and run `cloud/run_remote.sh`, or
+run the *GPU benchmark* GitHub workflow; both do every row above unattended
+(see [cloud/README.md](cloud/README.md)).
 
 Optional, if you want the controller running *inside* the cluster for the
 benchmark (what the resume bullet describes): before step 4,

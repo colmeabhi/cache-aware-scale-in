@@ -13,6 +13,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$ROOT/scripts/lib.sh"
 PAUSE="${PAUSE:-1}"
+trap 'echo $? > "$RESULTS_DIR/.run_day.exit"' EXIT     # cloud/run_remote.sh waits for this file
+if [ -z "${GATEWAY_URL:-}" ]; then
+    export ROUTER=builtin GATEWAY_URL="http://127.0.0.1:8081"
+    log "no GATEWAY_URL: stage 5 will start the built-in prefix-affinity router on $GATEWAY_URL"
+fi
 pause() { echo; log "next: $*"; if [ "$PAUSE" = 1 ]; then read -r -p "        press Enter to continue (Ctrl-C to stop) "; fi; }
 
 log "GPU day runner. Results go to $RESULTS_DIR"

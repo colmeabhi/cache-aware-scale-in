@@ -1,0 +1,73 @@
+# The GPU day, hands-free. Click "Run workflow", wait, read the artifact.
+#
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   HF_TOKEN               Hugging Face token with Llama 3 access
+#   GPU_SSH_PRIVATE_KEY    private key whose public half is on the machine / given to the provider
+#   GPU_SSH_HOST           (provider=manual) the machine's address
+#   GPU_PROVIDER_API_KEY   (other providers) the provider's API key
+# Variables (same page, "Variables" tab), optional:
+#   GPU_PROVIDER (manual), GPU_SSH_USER (ubuntu), GPU_TYPE, GPU_REGION
+name: GPU benchmark
+on:
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: benchmark trials per mode
+        default: "3"
+      tool:
+        description: load tool (loadgen | inference-perf)
+        default: loadgen
+      nbody:
+        description: also run the N-body benchmarks (1/0)
+        default: "1"
+      keep_instance:
+        description: keep the machine running afterwards (1/0)
+        default: "0"
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350          # GitHub's limit is 360; the day is ~4 h
+    env:
+      GPU_PROVIDER: ${{ vars.GPU_PROVIDER || 'manual' }}
+      GPU_SSH_USER: ${{ vars.GPU_SSH_USER || 'ubuntu' }}
+      GPU_TYPE: ${{ vars.GPU_TYPE }}
+      GPU_REGION: ${{ vars.GPU_REGION }}
+      GPU_SSH_HOST: ${{ secrets.GPU_SSH_HOST }}
+      GPU_PROVIDER_API_KEY: ${{ secrets.GPU_PROVIDER_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GPU_SSH_KEY: /home/runner/.ssh/gpu_key
+      TRIALS: ${{ inputs.trials }}
+      TOOL: ${{ inputs.tool }}
+      NBODY: ${{ inputs.nbody }}
+      KEEP_INSTANCE: ${{ inputs.keep_instance }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ssh key
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.GPU_SSH_PRIVATE_KEY }}" > ~/.ssh/gpu_key
+          chmod 600 ~/.ssh/gpu_key
+          ssh-keygen -y -f ~/.ssh/gpu_key > ~/.ssh/gpu_key.pub
+      - name: run the GPU day
+        run: cloud/run_remote.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-day-results
+          path: results/remote-*
+      - name: commit results to a branch
+        if: always()
+        run: |
+          dir=$(ls -d results/remote-* 2>/dev/null | tail -1) || exit 0
+          [ -n "$dir" ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          branch="results/run-${{ github.run_number }}"
+          git checkout -b "$branch"
+          git add -f "$dir"
+          git commit -m "GPU day results (workflow run ${{ github.run_number }})" || exit 0
+          git push -u origin "$branch"

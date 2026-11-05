@@ -8,3 +8,6 @@ results/*
 !results/*.png
 !results/scale_in_trials.csv
 !results/metrics_discovery_*.txt
+cloud/.env
+.env
+!results/remote-*/RESULTS.md

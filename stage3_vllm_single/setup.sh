@@ -27,7 +27,9 @@ if ! kubectl get secret hf-token -n "$NAMESPACE" >/dev/null 2>&1; then
     log "created secret hf-token"
 fi
 
-sed "s|__MODEL__|$MODEL|g; s|__IMAGE__|$VLLM_IMAGE|g" "$ROOT/stage3_vllm_single/k8s/vllm.yaml" \
+runtime_line=""
+kubectl get runtimeclass nvidia >/dev/null 2>&1 && runtime_line="runtimeClassName: nvidia" && log "RuntimeClass nvidia found (k3s): GPU pods will use it"
+sed "s|__MODEL__|$MODEL|g; s|__IMAGE__|$VLLM_IMAGE|g; s|# __RUNTIME_CLASS__.*|$runtime_line|" "$ROOT/stage3_vllm_single/k8s/vllm.yaml" \
     | kubectl apply -n "$NAMESPACE" -f - >/dev/null
 log "applied vllm Deployment (model=$MODEL image=$VLLM_IMAGE). First start downloads ~16 GB of weights."
 log "watch with:  kubectl logs -n $NAMESPACE deploy/$DEPLOYMENT -f"

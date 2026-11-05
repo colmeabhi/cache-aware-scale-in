@@ -24,10 +24,12 @@ if [ -n "$first" ]; then
     NAME="vLLM exposes a prefix-cache metric";   check "scrape $first | $PYTHON -m cacheaware.vllm_metrics"
 fi
 NAME="server version >= 1.22 (pod-deletion-cost on by default)"; check "kubectl version -o json | $PYTHON -c 'import json,sys; v=json.load(sys.stdin)[\"serverVersion\"]; assert int(v[\"minor\"].rstrip(\"+\")) >= 22'"
-if [ -n "${GATEWAY_URL:-}" ]; then
+if [ "${ROUTER:-}" = builtin ]; then
+    ok "stage 5 will use the built-in prefix-affinity router (no llm-d gateway given)"
+elif [ -n "${GATEWAY_URL:-}" ]; then
     NAME="gateway $GATEWAY_URL answers /v1/models";  check curl -fs "$GATEWAY_URL/v1/models"
 else
-    fail "GATEWAY_URL not set (needed for stage 5)"; problems=$((problems+1))
+    fail "GATEWAY_URL not set and ROUTER!=builtin (needed for stage 5)"; problems=$((problems+1))
 fi
 NAME="inference-perf installed (optional: TOOL=loadgen works without it)"; command -v inference-perf >/dev/null && ok "$NAME" || log "note: $NAME"
 NAME="nvcc (for the N-body benchmarks)"; command -v nvcc >/dev/null && ok "$NAME" || log "note: $NAME not found"

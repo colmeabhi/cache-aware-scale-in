@@ -23,6 +23,14 @@
 | llm-d facts | gateway URL, namespace and labels of the decode pods | 10 min | values for `GATEWAY_URL`, `NAMESPACE`, `SELECTOR`, `DEPLOYMENT` |
 | read | guide.md sections 4 and 6 | 30 min | |
 
+## Hands-free option
+
+Fill `cloud/.env` (or the GitHub secrets) and run `cloud/run_remote.sh`, or
+the *GPU benchmark* workflow. It provisions, bootstraps k3s + NVIDIA, runs
+every phase below with `PAUSE=0`, fetches the results and destroys the
+machine. First time: `KEEP_INSTANCE=1` so you can fix any environment
+surprise in place. Details in `cloud/README.md`.
+
 ## The day (time budget ~4 h of GPU)
 
 ```mermaid
