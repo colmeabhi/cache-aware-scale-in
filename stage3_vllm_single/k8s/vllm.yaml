@@ -22,6 +22,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/port: "8000"
     spec:
+      # __RUNTIME_CLASS__   (setup.sh writes "runtimeClassName: nvidia" here when the cluster has that RuntimeClass)
       terminationGracePeriodSeconds: 30
       containers:
         - name: vllm

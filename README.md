@@ -29,6 +29,8 @@ routing, k3s, Python. Benchmarked with `kubernetes-sigs/inference-perf`
 | run the GPU day end to end | `stage6_final/run_day.sh` (see the runbook, guide.md section 6) |
 | watch a benchmark live | `stage5_benchmark/dashboard.sh` + an SSH tunnel (guide.md section 7) |
 | full observability: Prometheus, Loki, Grafana | `monitoring/setup.sh`, then `monitoring/open.sh` ([monitoring/README.md](monitoring/README.md)) |
+| paste credentials and have the whole GPU day run itself | `cloud/.env` + `cloud/run_remote.sh`, or the *GPU benchmark* GitHub workflow ([cloud/README.md](cloud/README.md)) |
+| read the whole thing as a book, from zero | [book/README.md](book/README.md) |
 
 ## The six stages
 
@@ -44,6 +46,7 @@ before it and adds one new capability plus an evaluation that proves it.
 | 5 | `stage5_benchmark/` | 3 GPUs + gateway | inference-perf / loadgen benchmark, live dashboard, report | **GPU-day goals 2 + 3:** TTFT and hit rate, default vs cache-aware |
 | 6 | `stage6_final/` | 3 GPUs | controller as an in-cluster image + RBAC, preflight, one-command day runner, N-body runbook | preflight says GO; everything above runs from one script |
 | add-on | `monitoring/` | any cluster (stage 2+) | Prometheus, Loki, Alloy, Grafana with a provisioned dashboard; the controller exports its own metrics | every component is up and ingesting (`monitoring/eval.sh`) |
+| add-on | `cloud/` + `.github/workflows/` | an SSH-reachable GPU box | provisioning contract, k3s + NVIDIA bootstrap, unattended day runner, built-in prefix-affinity router, CI | CI: tests + kind stage 2 on every push; GPU workflow: results committed to a branch |
 
 ```mermaid
 flowchart LR
@@ -70,6 +73,7 @@ cacheaware/                 the Python package (grows stage by stage)
   dashboard.py/.html        [5] read-only live dashboard
   report.py                 [5] trial folders -> RESULTS.md + chart
   metrics_exporter.py       [add-on] the controller's own Prometheus /metrics (costs per pod)
+  router.py                 [add-on] prefix-affinity router, stand-in for llm-d when it is not installed
 scripts/
   lib.sh                    shell helpers every stage uses (pods, scrape, scale, wait...)
   scale_in_trials.sh        the scale-in verification harness (stage 2 and 4)
@@ -80,6 +84,9 @@ stage4_scale_in_real/       setup.sh, warm_skewed.sh, eval.sh
 stage5_benchmark/           run_trial.sh, run_benchmark.sh, dashboard.sh, eval.sh, inference-perf.yaml.template
 stage6_final/               Dockerfile, k8s/, build_image.sh, preflight.sh, run_day.sh, nbody_a100.sh, checklist.md
 monitoring/                 Prometheus + Loki + Alloy + Grafana manifests, provisioned dashboard, setup/open/eval/teardown
+cloud/                      .env.example, run_remote.sh, bootstrap.sh, providers/, k8s/nvidia.yaml
+.github/workflows/          ci.yml (tests + kind stage 2 + monitoring), gpu-benchmark.yml (the day, hands-free)
+book/                       the long-form explanation of everything, from zero
 results/                    everything the scripts produce (RESULTS.md, csv, png, live/, bench/)
 guide.md                    plan, architecture decisions, undergrad explainer, runbook, troubleshooting
 PLAN.md                     the GPU-day plan with time budget and risks

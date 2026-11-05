@@ -1,0 +1,49 @@
+# Runs on every push and pull request. No GPU needed.
+#   unit        : all pytest suites + shellcheck
+#   kind-stage2 : a real (CPU-only) Kubernetes cluster; proves scale-in removes
+#                 the lowest-cost pod, and that the monitoring stack ingests data
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - run: PYTHONPATH=. python -m pytest -q stage1_local_prototype/tests stage3_vllm_single/tests stage5_benchmark/tests
+      - run: PYTHONPATH=. python stage1_local_prototype/eval_scenario.py
+      - run: sudo apt-get install -y -qq shellcheck && shellcheck -S warning -x scripts/*.sh stage*/*.sh monitoring/*.sh cloud/*.sh
+
+  kind-stage2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt
+      - uses: helm/kind-action@v1
+        with: {cluster_name: cacheaware}
+      - name: stage 2 setup
+        run: stage2_mock_cluster/setup.sh
+      - name: stage 2 eval (scale-in removes the lowest-cost pod)
+        run: TRIALS=2 SETTLE=20 stage2_mock_cluster/eval.sh
+      - name: monitoring stack
+        run: monitoring/setup.sh && monitoring/eval.sh
+      - name: controller logs
+        if: always()
+        run: cat results/controller.log || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage2-results
+          path: |
+            results/scale_in_trials.csv
+            results/controller.log
