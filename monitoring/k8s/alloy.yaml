@@ -1,0 +1,104 @@
+# Grafana Alloy ships pod logs to Loki. It reads them through the Kubernetes
+# API (pods/log), so it needs no hostPath and runs as one Deployment, not a
+# DaemonSet. Promtail is end-of-life; Alloy is its replacement.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: alloy}
+subjects:
+  - {kind: ServiceAccount, name: alloy, namespace: monitoring}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: monitoring
+data:
+  config.alloy: |
+    // 1. find every pod in the cluster
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    // 2. keep useful labels: namespace, pod, container, app
+    discovery.relabel "pods" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+    }
+
+    // 3. tail their logs through the API server ...
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pods.output
+      forward_to = [loki.write.default.receiver]
+    }
+
+    // 4. ... and push them to Loki
+    loki.write "default" {
+      endpoint {
+        url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: monitoring
+  labels: {app: alloy}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: alloy}
+  template:
+    metadata:
+      labels: {app: alloy}
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.5.1
+          args: ["run", "/etc/alloy/config.alloy", "--server.http.listen-addr=0.0.0.0:12345"]
+          ports: [{containerPort: 12345, name: http}]
+          readinessProbe:
+            httpGet: {path: /-/ready, port: 12345}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: config, mountPath: /etc/alloy}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: config
+          configMap: {name: alloy-config}

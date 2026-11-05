@@ -59,4 +59,9 @@ pick; anything other than 3/3 is normal. Rows accumulate in
 - Removed pod ≠ lowest cost: `kubectl version` server ≥ 1.22? Were all 3 pods Ready (a not-Ready pod is removed first regardless of cost)?
 - `port-forward` is not used here; everything goes through the API-server proxy.
 
+**Optional here:** `make monitoring` installs Prometheus, Loki and Grafana on
+this same cluster; the fake pods' metrics and the controller's costs show up
+in the provisioned dashboard, so you can rehearse the observability side
+without a GPU too.
+
 **Next:** stage 3 replaces the fake pods with one real vLLM.

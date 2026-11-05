@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .kube import Kube, PodInfo
+from .metrics_exporter import Exporter
 from .scoring import PodHistory, Weights, cache_value, deletion_cost, worth_patching
 from .vllm_metrics import fetch_text, sample_from_text
 
@@ -60,6 +61,7 @@ class Settings:
     max_inflight: int = 64         # what counts as "fully busy" for the inflight weight
     dry_run: bool = False          # compute and log, never patch
     kubeconfig: str | None = None
+    metrics_listen: str = ""       # e.g. "0.0.0.0:9108" to expose our own /metrics; "" = off
 
     @classmethod
     def from_args(cls, argv: list[str] | None = None) -> tuple["Settings", argparse.Namespace]:
@@ -81,6 +83,8 @@ class Settings:
         p.add_argument("--max-inflight", type=int, default=int(env("MAX_INFLIGHT", "64")))
         p.add_argument("--dry-run", action="store_true", default=env("DRY_RUN", "0") == "1")
         p.add_argument("--kubeconfig", default=env("KUBECONFIG_PATH"))
+        p.add_argument("--metrics-listen", default=env("METRICS_LISTEN", ""),
+                       help="host:port for the controller's own Prometheus /metrics (monitoring add-on)")
         p.add_argument("--once", action="store_true", help="run one cycle and exit")
         p.add_argument("--static-targets", default=env("STATIC_TARGETS"),
                        help="stage 1: name=url,name=url ... instead of Kubernetes")
@@ -92,7 +96,7 @@ class Settings:
             weights=Weights(args.w_hit, args.w_usage, args.w_inflight),
             ewma_alpha=args.ewma_alpha, min_tokens=args.min_tokens, min_delta=args.min_delta,
             cost_scale=args.cost_scale, max_inflight=args.max_inflight,
-            dry_run=args.dry_run, kubeconfig=args.kubeconfig,
+            dry_run=args.dry_run, kubeconfig=args.kubeconfig, metrics_listen=args.metrics_listen,
         )
         return settings, args
 
@@ -170,12 +174,34 @@ class Controller:
         self.s = settings
         self.backend = backend
         self.histories: dict[str, PodHistory] = {}   # pod name -> counters we remember
+        self.exporter = Exporter()                    # our own /metrics (monitoring add-on)
+        if settings.metrics_listen:
+            self.exporter.serve(settings.metrics_listen)
 
     def run_once(self) -> list[PodReport]:
+        started = time.monotonic()
         pods = self.backend.list_pods()
         reports = [self.handle_pod(pod) for pod in pods]
         self.forget_missing(pods)
+        self.publish(reports, time.monotonic() - started)
         return reports
+
+    def publish(self, reports: list[PodReport], cycle_seconds: float) -> None:
+        """Mirror this cycle's decisions into the exporter so Grafana can show them."""
+        ex = self.exporter
+        for r in reports:
+            if r.cost is not None:
+                ex.set("cacheaware_pod_deletion_cost", r.cost, "cost written to the pod", pod=r.name)
+                ex.set("cacheaware_recent_hit_rate", r.hit_rate or 0.0, "EWMA prefix-cache hit rate", pod=r.name)
+                ex.set("cacheaware_kv_usage", r.kv_usage or 0.0, "KV-cache usage 0..1", pod=r.name)
+                ex.set("cacheaware_cache_value", r.value or 0.0, "score 0..1", pod=r.name)
+            if r.action == "patched":
+                ex.inc("cacheaware_patches_total", help_text="annotation writes")
+            if r.action == "error":
+                ex.inc("cacheaware_scrape_errors_total", help_text="failed /metrics scrapes")
+        ex.set("cacheaware_cycle_duration_seconds", cycle_seconds, "wall time of the last cycle")
+        ex.set("cacheaware_last_cycle_timestamp_seconds", time.time(), "unix time of the last cycle")
+        ex.set("cacheaware_pods_seen", len(reports), "pods matched by the selector")
 
     def handle_pod(self, pod: PodInfo) -> PodReport:
         report = PodReport(name=pod.name, previous_cost=read_cost(pod))
@@ -224,6 +250,7 @@ class Controller:
         for name in list(self.histories):
             if name not in alive:
                 del self.histories[name]
+                self.exporter.drop_label_value("pod", name)
 
     def run_forever(self) -> None:
         stop = {"now": False}

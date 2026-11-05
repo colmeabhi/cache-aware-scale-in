@@ -13,6 +13,9 @@ spec:
   template:
     metadata:
       labels: {app: vllm}
+      annotations:                      # monitoring add-on: Prometheus scrapes this pod
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
     spec:
       terminationGracePeriodSeconds: 2
       containers:

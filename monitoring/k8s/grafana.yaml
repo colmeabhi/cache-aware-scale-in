@@ -1,0 +1,79 @@
+# Grafana with everything provisioned from files: both datasources and the
+# dashboard (ConfigMap "grafana-dashboards", created by setup.sh from
+# monitoring/grafana/*.json). Anonymous access as Admin, which is acceptable
+# only because the Service is ClusterIP and you reach it via port-forward.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: monitoring
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus.monitoring.svc:9090
+        isDefault: true
+      - name: Loki
+        uid: loki
+        type: loki
+        url: http://loki.monitoring.svc:3100
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: cache-aware
+        folder: ""
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels: {app: grafana}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: grafana}
+  template:
+    metadata:
+      labels: {app: grafana}
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.4.0
+          env:
+            - {name: GF_AUTH_ANONYMOUS_ENABLED, value: "true"}
+            - {name: GF_AUTH_ANONYMOUS_ORG_ROLE, value: "Admin"}
+            - {name: GF_AUTH_DISABLE_LOGIN_FORM, value: "true"}
+            - {name: GF_SECURITY_ADMIN_PASSWORD, value: "admin"}
+            - {name: GF_ANALYTICS_REPORTING_ENABLED, value: "false"}
+          ports: [{containerPort: 3000, name: http}]
+          readinessProbe:
+            httpGet: {path: /api/health, port: 3000}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: provisioning, mountPath: /etc/grafana/provisioning/datasources/datasources.yaml, subPath: datasources.yaml}
+            - {name: provisioning, mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml, subPath: dashboards.yaml}
+            - {name: dashboards, mountPath: /var/lib/grafana/dashboards}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+      volumes:
+        - name: provisioning
+          configMap: {name: grafana-provisioning}
+        - name: dashboards
+          configMap: {name: grafana-dashboards}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  selector: {app: grafana}
+  ports: [{port: 3000, targetPort: 3000}]

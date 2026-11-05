@@ -321,7 +321,40 @@ either output.
 RBAC is three verbs on pods in one namespace (`get list watch patch`, plus
 `pods/proxy get` for proxy mode). The image runs as a non-root user.
 
-### 4.13 Limitations and next steps
+### 4.13 The observability stack (Prometheus, Loki, Alloy, Grafana)
+
+**Decision.** An optional `monitoring/` add-on with plain, pinned manifests:
+Prometheus (scrapes pods by the same label selector the controller uses, plus
+anything annotated `prometheus.io/scrape`), Loki single-binary, Grafana
+Alloy for log shipping, Grafana with both datasources and one dashboard
+provisioned from files. The controller exports its decisions as metrics
+(`cacheaware_pod_deletion_cost{pod}` and friends) so the costs show up in
+Grafana, and `run_trial.sh` posts "scaled 3 → 2" as a Grafana annotation.
+
+**Alternatives.**
+- *kube-prometheus-stack via Helm.* The standard route in production, but it
+  installs operators, CRDs and node exporters you do not need on a rented
+  box, and Helm is one more tool that can be missing. Four manifests you can
+  read in ten minutes are easier to trust on the day. Moving to the Helm
+  chart later only means replacing `k8s/prometheus.yaml`; the dashboard and
+  the controller's metrics stay.
+- *Promtail / a DaemonSet with hostPath.* Promtail is end-of-life. Alloy's
+  `loki.source.kubernetes` reads logs through the API server, so it needs no
+  host access and runs as a single Deployment.
+- *Only the file-based dashboard from stage 5.* Kept, because it works with
+  zero cluster installs and shows the trial table. Grafana adds history,
+  PromQL, logs next to metrics, and a demo that looks like production.
+
+**Benchmark impact.** One GET per pod every 15 s (Prometheus) and log reads
+through the API server (Alloy), identical in both modes. Nothing in the
+stack touches the GPU.
+
+**Why the controller exports metrics instead of reading annotations in
+Grafana.** kube-state-metrics does not expose arbitrary annotations, and
+reading them through Grafana would need another exporter. The controller
+already knows the numbers; publishing them is 80 lines (`metrics_exporter.py`).
+
+### 4.14 Limitations and next steps
 
 - The cost is at most 5 s stale; a sudden traffic shift can beat it.
 - `pod-deletion-cost` is best-effort by design and only orders pods of the
@@ -533,6 +566,7 @@ Or phase by phase:
 
 | # | command | time | pass looks like |
 |---|---|---|---|
+| 2m | `monitoring/setup.sh && monitoring/eval.sh` (optional) | 3 min | `monitoring stack: PASS` |
 | 3a | `stage3_vllm_single/setup.sh` (skip if llm-d serves already) | 5-25 min | `1 pod(s) ready` |
 | 3b | `stage3_vllm_single/discover_metrics.sh` | 1 min | a `prefix_hits` line with a real name, saved to results/ |
 | 3c | `stage3_vllm_single/eval.sh` | 2 min | `PASS: prefix caching works` |
@@ -585,6 +619,14 @@ flowchart LR
 - Zero-process alternative: `rsync -a user@gpu-box:cache-aware-scale-in/results/ ./results/`
   in a loop on the laptop and run `python -m cacheaware.dashboard --results results` locally.
 
+**Grafana (monitoring add-on).** `monitoring/setup.sh` installs Prometheus,
+Loki, Alloy and Grafana; `monitoring/open.sh` port-forwards them;
+tunnel `3000` and `9090` the same way as above. The provisioned dashboard
+`http://localhost:3000/d/cache-aware-scale-in` shows pod-deletion-cost,
+recent hit rate, KV usage, TTFT p50/p90, running/waiting requests, and the
+controller and vLLM logs, with benchmark events as red annotations. Details
+and the eval in [monitoring/README.md](monitoring/README.md).
+
 ---
 
 ## 8. Troubleshooting
@@ -600,6 +642,9 @@ flowchart LR
 | inference-perf fails to parse config | schema differs from the template | compare with its examples, or `TOOL=loadgen` |
 | TTFT identical in both modes | caches not warm (short `WARM`), or uniform traffic | raise `WARM`, lower `GROUPS`, check hit rates on the dashboard |
 | `nbody_a100.sh`: "the GPU is busy" | vLLM still holding the GPU | `kubectl scale deploy vllm --replicas=0` |
+| Prometheus `vllm` job has 0 targets | `SELECTOR` label differs from what the pods carry, or rendered before the pods existed | `kubectl get pods -l "$SELECTOR" --show-labels`; rerun `monitoring/setup.sh` |
+| Loki has no streams | Alloy cannot read `pods/log` (RBAC) or Loki not ready yet | `kubectl logs -n monitoring deploy/alloy`; wait 60 s |
+| Grafana dashboard empty but Prometheus has data | wrong `namespace` variable at the top of the dashboard | set it to your vLLM namespace |
 | `ncu` permission error | profiling restricted to root | run as root or set `NVreg_RestrictProfilingToAdminUsers=0`; the script continues without it |
 
 ---
