@@ -1,0 +1,53 @@
+# inference-perf config, rendered by run_trial.sh (placeholders __LIKE_THIS__).
+#
+# One run = several stages back to back:
+#   stage 0            __WARM__ s at __RATE__ req/s  -> fills the caches ("warm-up")
+#   stages 1..4        30 s each                      -> measured AFTER the scale-in,
+#                                                        so we can see TTFT recover
+# run_trial.sh scales the Deployment 3 -> 2 exactly when stage 0 ends.
+#
+# CHECK THIS FILE AGAINST YOUR INSTALLED VERSION before the GPU day:
+#   pip show inference-perf ; look at its bundled examples, or
+#   https://github.com/kubernetes-sigs/inference-perf (examples/ and config.yml)
+# The schema has changed between releases. If the run fails to parse the
+# config, fix the keys here; nothing else depends on them. If it cannot be
+# made to work quickly, use TOOL=loadgen (our own generator, same protocol).
+load:
+  type: constant
+  stages:
+    - rate: __RATE__
+      duration: __WARM__
+    - rate: __RATE__
+      duration: 30
+    - rate: __RATE__
+      duration: 30
+    - rate: __RATE__
+      duration: 30
+    - rate: __RATE__
+      duration: 30
+api:
+  type: completion
+  streaming: true
+server:
+  type: vllm
+  model_name: __MODEL__
+  base_url: __GATEWAY_URL__
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: __MODEL__
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 16              # distinct long prefixes ("system prompts")
+    num_prompts_per_group: 64   # questions per prefix
+    system_prompt_len: 1600     # tokens shared by a group
+    question_len: 64
+    output_len: 64
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+storage:
+  local_storage:
+    path: .

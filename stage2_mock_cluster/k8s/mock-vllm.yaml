@@ -1,0 +1,39 @@
+# Three fake vLLM pods. The ConfigMap "fake-vllm" (created by setup.sh from
+# cacheaware/fake_vllm.py) is mounted and run with a stock Python image, so
+# this needs no GPU and no custom image. Labels match the default SELECTOR.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  labels: {app: vllm}
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: vllm}
+  template:
+    metadata:
+      labels: {app: vllm}
+    spec:
+      terminationGracePeriodSeconds: 2
+      containers:
+        - name: fake-vllm
+          image: python:3.12-slim
+          command: ["python", "/app/fake_vllm.py", "--port", "8000", "--hit-rate", "0.5", "--usage", "0.3"]
+          ports: [{containerPort: 8000, name: http}]
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 2
+          volumeMounts: [{name: code, mountPath: /app}]
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+      volumes:
+        - name: code
+          configMap: {name: fake-vllm}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+spec:
+  selector: {app: vllm}
+  ports: [{port: 8000, targetPort: 8000}]

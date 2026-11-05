@@ -1,0 +1,8 @@
+# Runtime (stages 2+). Stage 1 needs nothing beyond the standard library + pytest.
+kubernetes>=29,<33
+# Optional: charts in the report
+matplotlib>=3.8
+# Development / stage 1 evals
+pytest>=8
+# Stage 5, optional (TOOL=inference-perf). Our loadgen works without it.
+# inference-perf

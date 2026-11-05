@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scale-in dashboard</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#6b7280; --line:#e5e7eb;
+          --a:#2563eb; --b:#ea580c; --c:#059669; --d:#7c3aed; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#171a21; --ink:#e6e8ec; --muted:#9aa3b2; --line:#2a2f3a; }
+  }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--ink);
+         font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin-bottom:14px; }
+  .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  .big { font-size:26px; font-weight:600; }
+  .pod { display:flex; justify-content:space-between; align-items:baseline; padding:6px 0; border-top:1px solid var(--line); }
+  .pod:first-of-type { border-top:0; }
+  .pod .name { font-family: ui-monospace, Menlo, monospace; font-size:12px; }
+  .pod .nums { color:var(--muted); font-size:12px; }
+  .gone { opacity:.45; text-decoration: line-through; }
+  canvas { width:100%; height:200px; display:block; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; }
+  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; }
+  .events { max-height:220px; overflow:auto; font-size:12px; }
+  .events div { padding:3px 0; border-bottom:1px solid var(--line); }
+  .events time { color:var(--muted); margin-right:8px; }
+  .legend span { display:inline-block; margin-right:12px; font-size:12px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+  .phase { display:inline-block; padding:2px 8px; border-radius:999px; background:var(--a); color:#fff; font-size:12px; }
+</style>
+</head>
+<body>
+<h1>Cache-aware scale-in: live benchmark</h1>
+<div class="sub" id="sub">waiting for data…</div>
+
+<div class="grid">
+  <div class="card"><h2>Run</h2>
+    <div><span class="phase" id="phase">idle</span></div>
+    <div style="margin-top:8px" id="run"></div>
+  </div>
+  <div class="card"><h2>Pods (live)</h2><div id="pods"></div></div>
+  <div class="card"><h2>Last scale-in</h2><div id="scalein"></div></div>
+</div>
+
+<div class="grid" style="margin-top:12px">
+  <div class="card"><h2>Recent prefix-cache hit rate per pod</h2><canvas id="hit"></canvas><div class="legend" id="legend1"></div></div>
+  <div class="card"><h2>Server-side TTFT per pod (mean of last sample interval, s)</h2><canvas id="ttft"></canvas><div class="legend" id="legend2"></div></div>
+</div>
+
+<div class="grid" style="margin-top:12px">
+  <div class="card" style="grid-column: 1 / -1"><h2>Trials so far</h2><div id="trials"></div></div>
+  <div class="card" style="grid-column: 1 / -1"><h2>Events</h2><div class="events" id="events"></div></div>
+</div>
+
+<script>
+const COLORS = ['#2563eb', '#ea580c', '#059669', '#7c3aed', '#db2777', '#0891b2'];
+const colorOf = {};
+function color(pod) { if (!(pod in colorOf)) colorOf[pod] = COLORS[Object.keys(colorOf).length % COLORS.length]; return colorOf[pod]; }
+const short = n => n.length > 28 ? n.slice(-28) : n;
+const f2 = x => (x === null || x === undefined || Number.isNaN(x)) ? '–' : Number(x).toFixed(2);
+const f3 = x => (x === null || x === undefined || Number.isNaN(x)) ? '–' : Number(x).toFixed(3);
+
+function drawSeries(canvas, seriesByPod, key, yMax, legendEl, windowSec) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  const padL = 36, padR = 8, padT = 8, padB = 18;
+  const now = Date.now() / 1000, t0 = now - windowSec;
+  const x = t => padL + (t - t0) / windowSec * (W - padL - padR);
+  const y = v => padT + (1 - v / yMax) * (H - padT - padB);
+  ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
+  ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--muted');
+  ctx.font = '11px system-ui';
+  for (let i = 0; i <= 4; i++) {
+    const v = yMax * i / 4;
+    ctx.beginPath(); ctx.moveTo(padL, y(v)); ctx.lineTo(W - padR, y(v)); ctx.stroke();
+    ctx.fillText(v.toFixed(yMax <= 1 ? 2 : 1), 2, y(v) + 4);
+  }
+  ctx.fillText('last ' + Math.round(windowSec / 60) + ' min', padL, H - 4);
+  legendEl.innerHTML = '';
+  for (const [pod, samples] of Object.entries(seriesByPod)) {
+    ctx.strokeStyle = color(pod); ctx.lineWidth = 1.8; ctx.beginPath();
+    let started = false;
+    for (const s of samples) {
+      const v = s[key]; if (v === null || v === undefined || s.t < t0) continue;
+      const px = x(s.t), py = y(Math.min(v, yMax));
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    legendEl.innerHTML += `<span><i style="background:${color(pod)}"></i>${short(pod)}</span>`;
+  }
+}
+
+function render(state) {
+  const st = state.status || {};
+  document.getElementById('phase').textContent = st.phase || 'idle';
+  document.getElementById('sub').textContent = 'updated ' + (st.updated_at || '–') + ' · tool: ' + (st.tool || '–');
+  document.getElementById('run').innerHTML =
+    `<div>mode: <b>${st.mode || '–'}</b></div><div>trial: <b>${st.trial || '–'}</b> of ${st.trials || '–'}</div>` +
+    `<div>controller: <b>${st.controller || '–'}</b></div><div>note: ${st.note || ''}</div>`;
+
+  const latest = {};
+  for (const [pod, samples] of Object.entries(state.samples || {})) latest[pod] = samples[samples.length - 1];
+  const now = Date.now() / 1000;
+  let podsHtml = '';
+  for (const pod of Object.keys(latest).sort()) {
+    const s = latest[pod], stale = now - s.t > 15;
+    podsHtml += `<div class="pod ${stale ? 'gone' : ''}"><span class="name" style="color:${color(pod)}">${short(pod)}</span>` +
+      `<span class="nums">hit ${f2(s.hit_rate_recent)} · usage ${f2(s.kv_usage)} · cost <b>${s.cost ?? '–'}</b> · run ${s.running ?? '–'}</span></div>`;
+  }
+  document.getElementById('pods').innerHTML = podsHtml || '<span class="sub">no samples yet</span>';
+
+  document.getElementById('scalein').innerHTML = st.removed_pod
+    ? `<div class="big">${short(st.removed_pod)}</div><div>cost rank at scale-in: <b>${st.removed_rank || '–'}</b> (1 = lowest cost) · expected: ${st.expected_pod ? short(st.expected_pod) : '–'}</div>`
+    : '<span class="sub">none yet</span>';
+
+  drawSeries(document.getElementById('hit'), state.samples || {}, 'hit_rate_recent', 1.0, document.getElementById('legend1'), 600);
+  let maxT = 0.5;
+  for (const samples of Object.values(state.samples || {})) for (const s of samples) if (s.ttft_recent_mean > maxT) maxT = Math.min(s.ttft_recent_mean, 5);
+  drawSeries(document.getElementById('ttft'), state.samples || {}, 'ttft_recent_mean', Math.ceil(maxT * 10) / 10, document.getElementById('legend2'), 600);
+
+  const rows = (state.trials || []).map(t => {
+    const windows = t.ttft || {};
+    const firstKey = Object.keys(windows).find(k => k !== 'all' && k !== 'summary' && !k.startsWith('stage_0'));
+    const w = (firstKey && windows[firstKey]) || {};
+    return `<tr><td>${t.mode}</td><td class="num">${t.trial}</td><td>${short(t.removed_pod || '–')}</td>` +
+      `<td class="num">${t.removed_rank ?? '–'}</td><td class="num">${f2(t.survivor_hit_rate)}</td>` +
+      `<td class="num">${f3(w.ttft_p50)}</td><td class="num">${f3(w.ttft_p90)}</td><td class="num">${w.errors ?? '–'}</td></tr>`;
+  }).join('');
+  document.getElementById('trials').innerHTML = rows
+    ? `<table><tr><th>mode</th><th class="num">trial</th><th>removed pod</th><th class="num">cost rank</th><th class="num">hit rate after</th><th class="num">TTFT p50 (first window)</th><th class="num">TTFT p90</th><th class="num">errors</th></tr>${rows}</table>`
+    : '<span class="sub">no finished trials yet</span>';
+
+  document.getElementById('events').innerHTML = (state.events || []).slice().reverse()
+    .map(e => `<div><time>${(e.at || '').slice(11, 19)}</time>${e.text}</div>`).join('');
+}
+
+async function tick() {
+  try { const r = await fetch('/api/state'); render(await r.json()); }
+  catch (e) { document.getElementById('sub').textContent = 'cannot reach /api/state: ' + e; }
+}
+tick(); setInterval(tick, 2000);
+</script>
+</body>
+</html>
