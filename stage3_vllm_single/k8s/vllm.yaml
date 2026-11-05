@@ -1,0 +1,65 @@
+# One real vLLM replica serving Llama 3 8B on one GPU.
+# setup.sh replaces __MODEL__ and __IMAGE__ and applies this with -n NAMESPACE.
+#
+# Things worth knowing:
+#   --enable-prefix-caching   on by default in the V1 engine; stated anyway.
+#   --max-model-len 8192      our prompts are ~1.7k tokens; keeps the KV pool big.
+#   hostPath /var/lib/hf-cache  weights are downloaded once per node, not per pod.
+#   terminationGracePeriodSeconds 30  in-flight requests get a chance to finish.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  labels: {app: vllm}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vllm}
+  template:
+    metadata:
+      labels: {app: vllm}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: vllm
+          image: __IMAGE__
+          args:
+            - --model=__MODEL__
+            - --port=8000
+            - --max-model-len=8192
+            - --gpu-memory-utilization=0.90
+            - --enable-prefix-caching
+            - --disable-log-requests
+          env:
+            - name: HF_TOKEN
+              valueFrom: {secretKeyRef: {name: hf-token, key: token}}
+            - name: HF_HOME
+              value: /hf
+          ports: [{containerPort: 8000, name: http}]
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            initialDelaySeconds: 30
+            periodSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+            failureThreshold: 180      # up to 30 min for the first weight download
+          resources:
+            limits: {nvidia.com/gpu: 1}
+          volumeMounts:
+            - {name: hf-cache, mountPath: /hf}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: hf-cache
+          hostPath: {path: /var/lib/hf-cache, type: DirectoryOrCreate}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 4Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+spec:
+  selector: {app: vllm}
+  ports: [{port: 8000, targetPort: 8000}]

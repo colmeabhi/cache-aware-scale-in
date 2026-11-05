@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+results/*
+!results/.gitkeep
+!results/RESULTS.md
+!results/*.png
+!results/scale_in_trials.csv
+!results/metrics_discovery_*.txt
