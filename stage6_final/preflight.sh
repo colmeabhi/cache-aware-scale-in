@@ -32,6 +32,7 @@ fi
 NAME="inference-perf installed (optional: TOOL=loadgen works without it)"; command -v inference-perf >/dev/null && ok "$NAME" || log "note: $NAME"
 NAME="nvcc (for the N-body benchmarks)"; command -v nvcc >/dev/null && ok "$NAME" || log "note: $NAME not found"
 NAME="ncu / Nsight Compute (optional, N-body profiling)"; command -v ncu >/dev/null && ok "$NAME" || log "note: $NAME not found"
+NAME="monitoring stack installed (optional: monitoring/setup.sh)"; kubectl get svc -n monitoring grafana >/dev/null 2>&1 && ok "$NAME" || log "note: $NAME"
 NAME="matplotlib (optional, charts)"; "$PYTHON" -c 'import matplotlib' 2>/dev/null && ok "$NAME" || log "note: $NAME not installed"
 echo
 df -h "$RESULTS_DIR" | sed 's/^/  /'

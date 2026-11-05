@@ -13,6 +13,9 @@ spec:
   template:
     metadata:
       labels: {app: cache-aware-controller}
+      annotations:                      # monitoring add-on: Prometheus scrapes the controller
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9108"
     spec:
       serviceAccountName: cache-aware-controller
       containers:
@@ -29,6 +32,8 @@ spec:
             - {name: W_HIT,        value: "0.7"}
             - {name: W_USAGE,      value: "0.3"}
             - {name: MIN_DELTA,    value: "25"}
+            - {name: METRICS_LISTEN, value: "0.0.0.0:9108"}   # the controller's own /metrics
+          ports: [{containerPort: 9108, name: metrics}]
           resources:
             requests: {cpu: 20m, memory: 64Mi}
             limits:   {cpu: 200m, memory: 128Mi}

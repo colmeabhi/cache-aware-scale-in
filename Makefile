@@ -1,5 +1,5 @@
 # One target per stage. Each stage's README explains what it needs.
-.PHONY: help test stage1 stage2 stage3 stage4 stage5 stage6 dashboard report clean
+.PHONY: help test stage1 stage2 stage3 stage4 stage5 stage6 monitoring dashboard report clean
 
 help:
 	@echo "make test     every unit test + the stage 1 scenario (laptop, no cluster)"
@@ -9,6 +9,7 @@ help:
 	@echo "make stage4   three replicas, scale-in removes the coldest        (GPU box)"
 	@echo "make stage5   benchmark baseline vs cache-aware + report          (GPU box, GATEWAY_URL)"
 	@echo "make stage6   controller image in-cluster + preflight             (GPU box)"
+	@echo "make monitoring Prometheus + Loki + Alloy + Grafana add-on, then its eval  (any cluster)"
 	@echo "make dashboard  live dashboard on :8080 (read-only)"
 	@echo "make report     rebuild results/RESULTS.md from results/bench"
 
@@ -37,6 +38,10 @@ stage5:
 stage6:
 	stage6_final/build_image.sh
 	stage6_final/preflight.sh
+
+monitoring:
+	monitoring/setup.sh
+	monitoring/eval.sh
 
 dashboard:
 	stage5_benchmark/dashboard.sh

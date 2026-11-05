@@ -4,6 +4,7 @@
 
 - [ ] `make stage1` passes (unit tests + scenario).
 - [ ] `make stage2` passes on kind/k3d: cache-aware 3/3, baseline not 3/3.
+- [ ] `make monitoring` passes on the same cluster; Grafana dashboard shows the fake pods.
 - [ ] `pip show inference-perf` and compare its example config with
       `stage5_benchmark/inference-perf.yaml.template`; fix keys if needed.
       (If it fights you, decide now to use `TOOL=loadgen`.)
@@ -17,8 +18,8 @@
 - [ ] `export KUBECONFIG=/etc/rancher/k3s/k3s.yaml HF_TOKEN=... GATEWAY_URL=...`
 - [ ] `git clone` this repo; `pip install -r requirements.txt`
 - [ ] `stage6_final/preflight.sh` says GO.
-- [ ] `tmux` with 3 panes: runner, `stage5_benchmark/dashboard.sh`, `kubectl get pods -w`.
-- [ ] Laptop: `ssh -L 8080:127.0.0.1:8080 user@box`, open http://localhost:8080.
+- [ ] `tmux` with 4 panes: runner, `stage5_benchmark/dashboard.sh`, `monitoring/open.sh`, `kubectl get pods -w`.
+- [ ] Laptop: `ssh -L 8080:127.0.0.1:8080 -L 3000:127.0.0.1:3000 user@box`; open http://localhost:8080 and http://localhost:3000/d/cache-aware-scale-in.
 
 ## The run (about 3 h of GPU time + 1 h N-body)
 

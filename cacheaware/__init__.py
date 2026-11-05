@@ -11,4 +11,5 @@ The package is built up stage by stage (see the stage*/ folders):
     stage 5   live.py           status + metric sampler that feeds the dashboard
               dashboard.py      tiny web server for the live dashboard
               report.py         baseline vs cache-aware comparison report
+    add-on    metrics_exporter.py  the controller's own Prometheus /metrics (monitoring/)
 """

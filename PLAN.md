@@ -18,6 +18,7 @@
 | install | `pip install -r requirements.txt` | 2 min | |
 | stage 1 | `make test` | 1 min | 21 tests pass, scenario prints 700/550/50 |
 | stage 2 | `make stage2` (needs docker + kind, or any cluster) | 10 min | cache-aware 3/3, baseline < 3/3 |
+| monitoring | `make monitoring` on the same kind cluster | 5 min | `monitoring stack: PASS`, Grafana shows the fake pods' costs |
 | inference-perf | `pip install inference-perf`, compare its example config with `stage5_benchmark/inference-perf.yaml.template` | 15 min | config keys match, or decision made to use `TOOL=loadgen` |
 | llm-d facts | gateway URL, namespace and labels of the decode pods | 10 min | values for `GATEWAY_URL`, `NAMESPACE`, `SELECTOR`, `DEPLOYMENT` |
 | read | guide.md sections 4 and 6 | 30 min | |

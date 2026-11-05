@@ -28,6 +28,7 @@ routing, k3s, Python. Benchmarked with `kubernetes-sigs/inference-perf`
 | run something right now on a laptop | `make test` (stage 1, no cluster, no GPU) |
 | run the GPU day end to end | `stage6_final/run_day.sh` (see the runbook, guide.md section 6) |
 | watch a benchmark live | `stage5_benchmark/dashboard.sh` + an SSH tunnel (guide.md section 7) |
+| full observability: Prometheus, Loki, Grafana | `monitoring/setup.sh`, then `monitoring/open.sh` ([monitoring/README.md](monitoring/README.md)) |
 
 ## The six stages
 
@@ -42,6 +43,7 @@ before it and adds one new capability plus an evaluation that proves it.
 | 4 | `stage4_scale_in_real/` | 3 GPUs | real skewed warm-up (hot / warm / cold pods) | **GPU-day goal 1:** the real scale-in removes the coldest replica |
 | 5 | `stage5_benchmark/` | 3 GPUs + gateway | inference-perf / loadgen benchmark, live dashboard, report | **GPU-day goals 2 + 3:** TTFT and hit rate, default vs cache-aware |
 | 6 | `stage6_final/` | 3 GPUs | controller as an in-cluster image + RBAC, preflight, one-command day runner, N-body runbook | preflight says GO; everything above runs from one script |
+| add-on | `monitoring/` | any cluster (stage 2+) | Prometheus, Loki, Alloy, Grafana with a provisioned dashboard; the controller exports its own metrics | every component is up and ingesting (`monitoring/eval.sh`) |
 
 ```mermaid
 flowchart LR
@@ -50,6 +52,8 @@ flowchart LR
   S3 --> S4[4 three replicas<br/>scale-in verified]
   S4 --> S5[5 benchmark<br/>+ dashboard + report]
   S5 --> S6[6 final<br/>image, preflight, run_day]
+  M[add-on: monitoring<br/>Prometheus, Loki, Grafana] -.-> S2
+  M -.-> S5
 ```
 
 ## Repository map
@@ -65,6 +69,7 @@ cacheaware/                 the Python package (grows stage by stage)
   live.py                   [5] status + the ONE metrics sampler that feeds the dashboard
   dashboard.py/.html        [5] read-only live dashboard
   report.py                 [5] trial folders -> RESULTS.md + chart
+  metrics_exporter.py       [add-on] the controller's own Prometheus /metrics (costs per pod)
 scripts/
   lib.sh                    shell helpers every stage uses (pods, scrape, scale, wait...)
   scale_in_trials.sh        the scale-in verification harness (stage 2 and 4)
@@ -74,6 +79,7 @@ stage3_vllm_single/         setup.sh, discover_metrics.sh, eval.sh, k8s/vllm.yam
 stage4_scale_in_real/       setup.sh, warm_skewed.sh, eval.sh
 stage5_benchmark/           run_trial.sh, run_benchmark.sh, dashboard.sh, eval.sh, inference-perf.yaml.template
 stage6_final/               Dockerfile, k8s/, build_image.sh, preflight.sh, run_day.sh, nbody_a100.sh, checklist.md
+monitoring/                 Prometheus + Loki + Alloy + Grafana manifests, provisioned dashboard, setup/open/eval/teardown
 results/                    everything the scripts produce (RESULTS.md, csv, png, live/, bench/)
 guide.md                    plan, architecture decisions, undergrad explainer, runbook, troubleshooting
 PLAN.md                     the GPU-day plan with time budget and risks

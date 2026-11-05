@@ -199,4 +199,18 @@ stop_port_forwards() { local pid; for pid in "${PF_PIDS[@]:-}"; do [ -n "$pid" ]
 # ---- live dashboard helpers -------------------------------------------------
 
 live_set()   { "$PYTHON" -m cacheaware.live --results "$RESULTS_DIR" set "$@" >/dev/null; }
-live_event() { "$PYTHON" -m cacheaware.live --results "$RESULTS_DIR" event "$*"; }
+live_event() { "$PYTHON" -m cacheaware.live --results "$RESULTS_DIR" event "$*"; grafana_annotate "$*"; }
+
+# ---- monitoring add-on: mirror events into Grafana as annotations (tag "bench") ----
+# Posts through the API-server service proxy, so it works wherever kubectl works.
+# Silently does nothing when the monitoring namespace is absent.
+GRAFANA_PRESENT=""
+grafana_annotate() {
+    [ "${GRAFANA_ANNOTATIONS:-1}" = 1 ] || return 0
+    if [ -z "$GRAFANA_PRESENT" ]; then
+        kubectl get svc -n monitoring grafana >/dev/null 2>&1 && GRAFANA_PRESENT=yes || GRAFANA_PRESENT=no
+    fi
+    [ "$GRAFANA_PRESENT" = yes ] || return 0
+    "$PYTHON" -c 'import json,sys; print(json.dumps({"text": sys.argv[1], "tags": ["bench"]}))' "$*" \
+        | kubectl create --raw /api/v1/namespaces/monitoring/services/grafana:3000/proxy/api/annotations -f - >/dev/null 2>&1 || true
+}

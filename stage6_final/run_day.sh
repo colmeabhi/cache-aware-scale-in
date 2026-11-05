@@ -5,7 +5,8 @@
 #   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml HF_TOKEN=hf_... GATEWAY_URL=http://...
 #   stage6_final/run_day.sh
 #
-# Phases:   preflight -> (stage 3 setup if no vLLM yet) -> discover metrics
+# Phases:   preflight -> (MONITORING=1) Prometheus/Loki/Grafana
+#        -> (stage 3 setup if no vLLM yet) -> discover metrics
 #        -> stage 3 eval -> stage 4 setup + eval -> stage 5 eval -> report
 #        -> (NBODY=1) N-body benchmarks on the same GPU
 set -euo pipefail
@@ -15,6 +16,10 @@ PAUSE="${PAUSE:-1}"
 pause() { echo; log "next: $*"; if [ "$PAUSE" = 1 ]; then read -r -p "        press Enter to continue (Ctrl-C to stop) "; fi; }
 
 log "GPU day runner. Results go to $RESULTS_DIR"
+if [ "${MONITORING:-1}" = 1 ]; then
+    pause "monitoring add-on: Prometheus + Loki + Alloy + Grafana (MONITORING=0 to skip)"
+    "$ROOT/monitoring/setup.sh" && "$ROOT/monitoring/eval.sh" || log "monitoring eval reported problems; the benchmark does not depend on it"
+fi
 "$ROOT/stage6_final/preflight.sh" || { pause "preflight reported problems. Continue anyway?"; }
 
 if ! kubectl get deployment -n "$NAMESPACE" "$DEPLOYMENT" >/dev/null 2>&1; then
