@@ -646,6 +646,212 @@ Read in this order: `cacheaware/scoring.py` (120 lines, the idea), `cacheaware/c
 - Code is shared through one Python package and one shell library; stage folders hold only what is specific to them.
 
 
+## Part III · Chapter 2: A guided reading of the code
+
+This chapter walks through the pieces of code that carry the idea, excerpt by excerpt. Each excerpt is real code from the repository, trimmed of comments; read the files for the full version. The order follows the data: a scrape becomes a hit rate, a hit rate becomes a cost, a cost is written, a scale-in reads it, an experiment checks it.
+
+### 1. From two scrapes to a recent hit rate (`cacheaware/scoring.py`)
+
+```python
+@dataclass
+class PodHistory:
+    last_queries: float | None = None
+    last_hits: float | None = None
+    recent_hit_rate: float | None = None   # the EWMA
+
+    def update(self, sample, alpha=0.3, min_tokens=256):
+        queries, hits = sample.prefix_queries, sample.prefix_hits
+        if queries is None or hits is None:          # old vLLM: only a gauge
+            self.recent_hit_rate = sample.hit_rate_gauge
+            return self.recent_hit_rate
+
+        first_sample = self.last_queries is None
+        counters_reset = not first_sample and queries < self.last_queries
+        if first_sample or counters_reset:
+            self.last_queries, self.last_hits = queries, hits
+            self.recent_hit_rate = hits / queries if queries > 0 else None
+            return self.recent_hit_rate
+
+        delta_queries = queries - self.last_queries
+        delta_hits = hits - self.last_hits
+        self.last_queries, self.last_hits = queries, hits
+        if delta_queries < min_tokens:
+            return self.recent_hit_rate                # idle: keep what we knew
+
+        interval_rate = min(1.0, max(0.0, delta_hits / delta_queries))
+        if self.recent_hit_rate is None:
+            self.recent_hit_rate = interval_rate
+        else:
+            self.recent_hit_rate = alpha * interval_rate + (1 - alpha) * self.recent_hit_rate
+        return self.recent_hit_rate
+```
+
+Read it top to bottom as a list of cases. No counters: use the gauge. First time, or counters went backwards: start from the lifetime ratio. Too little traffic: say nothing new. Otherwise: the interval's ratio, folded into the running estimate with weight `alpha`. The function returns `None` whenever it honestly does not know, and the caller treats `None` as zero value, which is right for a fresh pod with an empty cache.
+
+### 2. From a hit rate to a cost
+
+```python
+def cache_value(hit_rate, kv_usage, inflight_fraction=0.0, weights=None):
+    w = (weights or Weights()).normalised()
+    value = (w.hit_rate * clamp01(hit_rate)
+             + w.kv_usage * clamp01(kv_usage)
+             + w.inflight * clamp01(inflight_fraction))
+    return clamp01(value)
+
+def deletion_cost(value, scale=1000):
+    return int(round(clamp01(value) * scale))
+
+def worth_patching(current_cost, new_cost, min_delta=25):
+    if current_cost is None:
+        return True
+    return abs(new_cost - current_cost) >= min_delta
+```
+
+Three one-screen functions, each testable alone. `clamp01` turns `None` into 0 and keeps everything in range, so a bad reading can never produce a cost above 1000 or below 0. `worth_patching` is the dead band: a missing annotation is always written; an existing one only when it moved enough.
+
+### 3. One pod, one cycle (`cacheaware/controller.py`)
+
+```python
+def handle_pod(self, pod):
+    report = PodReport(name=pod.name, previous_cost=read_cost(pod))
+
+    if pod.phase != "Running" or pod.deleting:
+        report.action = "skipped"
+        return report
+
+    try:
+        text = self.backend.scrape(pod)
+    except Exception as exc:
+        report.action, report.note = "error", f"scrape failed: {exc}"[:80]
+        return report                      # keep whatever cost it had
+
+    sample = sample_from_text(text)
+    history = self.histories.setdefault(pod.name, PodHistory())
+    report.hit_rate = history.update(sample, self.s.ewma_alpha, self.s.min_tokens)
+    report.kv_usage = sample.kv_usage
+    inflight = (sample.running + sample.waiting) / max(1, self.s.max_inflight)
+    report.value = cache_value(report.hit_rate, report.kv_usage, inflight, self.s.weights)
+    report.cost = deletion_cost(report.value, self.s.cost_scale)
+
+    if not worth_patching(report.previous_cost, report.cost, self.s.min_delta):
+        report.action = "kept"
+        return report
+
+    annotations = {COST_ANNOTATION: str(report.cost), ...}
+    if self.s.dry_run:
+        report.action = "dry-run"
+    else:
+        self.backend.annotate(pod, annotations)
+        report.action = "patched"
+    return report
+```
+
+Every early `return` is a deliberate "do nothing" case: a pod that is starting or stopping, a pod that did not answer. The only write happens at the very end, after every check. `self.backend` is either the Kubernetes client or the static list of URLs from stage 1; the function cannot tell the difference, which is why the stage 1 tests exercise the same code the cluster runs.
+
+### 4. Which pod *should* go (`scripts/lib.sh`)
+
+```bash
+lowest_cost_pod() {   # the pod Kubernetes should delete first (missing cost counts as 0)
+    local p c best="" best_c=""
+    for p in $(ready_pods); do
+        c=$(pod_cost "$p"); [ "$c" = "-" ] && c=0
+        if [ -z "$best" ] || [ "$c" -lt "$best_c" ]; then best="$p"; best_c="$c"; fi
+    done
+    printf '%s' "$best"
+}
+```
+
+The experiments need an independent opinion of what Kubernetes ought to do, computed from the annotations alone, not from the controller's memory. This is it: read every Ready pod's annotation, treat a missing one as 0 (exactly as Kubernetes does), return the minimum. If the pod that disappears is not this one, something is wrong with the mechanism, not with the scoring.
+
+### 5. One trial of the scale-in experiment (`scripts/scale_in_trials.sh`)
+
+```bash
+run_trial() {
+    local trial="$1"
+    if [ "$FRESH_PODS" = 1 ]; then fresh_pods 3; else scale 3; wait_ready 3; fi
+
+    local all; mapfile -t all < <(ready_pods)
+    local cold="${all[$(( (trial - 1) % 3 ))]}"      # rotates: 1st, 2nd, 3rd pod
+    local hot="${all[$(( trial % 3 ))]}"
+    local warm="${all[$(( (trial + 1) % 3 ))]}"
+
+    [ "$MODE" = baseline ] && strip_costs
+    "skew_$SKEW" "$hot" "$warm" "$cold"             # skew_mock or skew_real
+    [ "$MODE" = cache-aware ] && sleep "$SETTLE" || strip_costs
+
+    local costs expected before removed rank
+    costs=$(costs_string); expected=$(lowest_cost_pod); before=$(pods)
+    scale 2
+    wait_ready 2 300
+    removed=$(removed_pod "$before")
+    rank=$(cost_rank_of "$removed" "$costs")
+
+    if [ "$removed" = "$cold" ]; then ok "removed the COLD pod"; verdict=1
+    else fail "removed $removed, the cold pod was $cold"; verdict=0; fi
+    echo "$MODE,$trial,$cold,$hot,$warm,\"$costs\",$removed,$rank,$verdict" >> "$CSV"
+}
+```
+
+The whole experiment is twenty lines once the helpers exist. Two details carry the honesty: the cold pod rotates with the trial number, and `before` is captured right before the scale so `removed_pod` can find the one that vanished by set difference. The CSV row records everything needed to re-check the verdict by hand. The only line that differs between stage 2 and stage 4 is `"skew_$SKEW"`: a function that sets fake knobs, or one that sends real traffic.
+
+### 6. The scale-in moment in the benchmark (`stage5_benchmark/run_trial.sh`)
+
+```bash
+log "load started; warming for ${WARM}s"
+sleep "$WARM"
+
+snap "$trial_dir/pre_snapshot.json"
+costs=$(costs_string); expected=$(lowest_cost_pod); before=$(pods)
+live_event "scaling 3 -> 2 (costs: $costs)"
+scale 2
+scale_at=$(date +%s)
+# the removed pod gets a deletionTimestamp immediately; find it without waiting for it to vanish
+removed=""
+for _ in $(seq 1 120); do
+    removed=$(kubectl get pods -n "$NAMESPACE" -l "$SELECTOR" -o json | "$PYTHON" -c '
+import json, sys
+for p in json.load(sys.stdin)["items"]:
+    if p["metadata"].get("deletionTimestamp"):
+        print(p["metadata"]["name"]); break' || true)
+    [ -n "$removed" ] && break
+    sleep 0.5
+done
+rank=$(cost_rank_of "$removed" "$costs")
+live_set phase=measuring removed_pod="$removed" removed_rank="$rank" expected_pod="$expected"
+```
+
+The snapshot before the scale is what the survivor hit rate is later computed against. The removed pod is identified by its deletion timestamp within half a second, rather than waiting the thirty seconds it takes to actually disappear, so the dashboard shows the verdict immediately and the measurement window is not confused with the drain.
+
+### 7. Same prefix, same pod (`cacheaware/router.py`)
+
+```python
+def candidates(self, key):
+    """Pods for this key, best first, each pod once (for failover)."""
+    with self._lock:
+        if not self._points:
+            return []
+        start = bisect.bisect_left(self._points, _h(key)) % len(self._points)
+        seen = []
+        for i in range(len(self._points)):
+            name = self._owner[self._points[(start + i) % len(self._points)]]
+            if name not in seen:
+                seen.append(name)
+            if len(seen) == len(self.urls):
+                break
+        return seen
+```
+
+`_points` is the sorted list of every pod's 64 markers on the ring; `_owner` maps a marker back to its pod. `bisect_left` finds where the key's hash lands, and the loop walks clockwise collecting pods in the order they are met. The first is the pod that serves the request; the rest are the failover order if it is gone. Removing a pod removes its markers and nothing else, which is the consistent-hashing property the test checks.
+
+### What to remember
+
+- The scoring is three short pure functions; everything uncertain returns `None` and scores as zero.
+- `handle_pod` does nothing in every doubtful case and writes only at the end.
+- The experiments compute "what should happen" from the annotations alone, independently of the controller.
+- The stage 2 and stage 4 experiments are the same twenty lines with one function swapped.
+- The router's ring is a sorted list and a binary search.
+
+
 ## Part IV · Measuring honestly
 
 A controller that "feels faster" is worth nothing on a resume or in a paper. The benchmark in stage 5 exists to produce two numbers that would survive a sceptical reader: time to first token after a scale-in, and the prefix-cache hit rate of the surviving pods, each for default scale-in and for cache-aware scale-in. This part explains how the experiment is built so those numbers mean what they claim.
@@ -944,6 +1150,167 @@ The cloud runner, the bootstrap and the workflows could not be executed where th
 - The by-hand runbook is the same sequence `run_day.sh` executes, with the pass condition for each step.
 
 
+## Part VI · Chapter 2: The GPU day, as a story
+
+This chapter tells the day once through, with what you see at each step and what you decide. Terminal excerpts are illustrative: the shape is exact, the numbers are what a typical successful run looks like.
+
+### 09:00 · The machine
+
+You have an Ubuntu box with three A100s and SSH. Either `cloud/run_remote.sh` did everything below for you and you are reading its log, or you are doing it by hand. By hand, you open `tmux` with four panes: one to run things, one for `kubectl get pods -n vllm -w`, one for the dashboard, one for the Grafana port-forwards. On your laptop:
+
+```bash
+ssh -L 8080:127.0.0.1:8080 -L 3000:127.0.0.1:3000 user@gpu-box
+```
+
+Then, on the box:
+
+```bash
+sudo cloud/bootstrap.sh          # only on a fresh machine; 3-6 minutes
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml HF_TOKEN=hf_...
+stage6_final/preflight.sh
+```
+
+```
+[PASS] kubectl installed
+[PASS] cluster reachable
+[PASS] python3 >= 3.10
+[PASS] python kubernetes client
+[PASS] a node advertises nvidia.com/gpu
+[FAIL] deployment vllm exists
+[FAIL] pods matching 'app=vllm' are ready
+[PASS] stage 5 will use the built-in prefix-affinity router (no llm-d gateway given)
+[FAIL] NO-GO: 2 problem(s) above
+```
+
+The two failures are expected before stage 3 has run; they are the next step, not a problem. Decision: proceed.
+
+### 09:10 · One real vLLM (stage 3)
+
+```bash
+stage3_vllm_single/setup.sh
+```
+
+The first start downloads about 16 GB of weights into `/var/lib/hf-cache`; the `kubectl get pods -w` pane shows the pod in `ContainerCreating`, then `Running` but not Ready, for five to twenty minutes depending on the network. The script waits for it. Then:
+
+```bash
+stage3_vllm_single/discover_metrics.sh
+```
+
+```
+== vllm-6f7d9c8b4-x2k9p
+-- vLLM version:
+{"version": "0.11.0"}
+-- what the controller reads:
+  kv_usage        vllm:kv_cache_usage_perc                   0.0012
+  prefix_queries  vllm:prefix_cache_queries                  0
+  prefix_hits     vllm:prefix_cache_hits                     0
+  ...
+```
+
+This is the moment the metric-name question is settled. If a line said `-- not found --` for both `prefix_hits` and `hit_rate_gauge`, you would stop here and add the new name to `NAME_CANDIDATES`; it has not happened in any version so far. Then:
+
+```bash
+stage3_vllm_single/eval.sh
+```
+
+```
+model=meta-llama/Meta-Llama-3-8B-Instruct groups=2 zipf=1.0 prefix_words=1200
+  prefix-cache lookups during the run: 65,920 tokens, hits: 59,904 tokens, hit rate 0.909
+  PASS: prefix caching works
+```
+
+Forty requests over two prefixes; nine tokens in ten came from cache. The load generator also prints its TTFT summary: the first request of each prefix around 170 ms, the rest around 20 ms. Decision: the foundation holds; proceed.
+
+### 09:40 · Three replicas and the scale-in test (stage 4)
+
+```bash
+stage4_scale_in_real/setup.sh
+stage4_scale_in_real/eval.sh
+```
+
+Each trial begins with a restart of all three pods (a minute or two, weights already on disk), then the three warm-ups run in parallel through port-forwards. The pod table appears:
+
+```
+  POD                                 READY  COST   HIT    USAGE
+  vllm-6f7d9c8b4-abc12                True   694    0.91   0.38
+  vllm-6f7d9c8b4-def34                True   412    0.49   0.21
+  vllm-6f7d9c8b4-ghi56                True    61    0.02   0.14
+[10:02:40] lowest cost -> Kubernetes should remove: vllm-6f7d9c8b4-ghi56
+[10:02:40] scaled vllm to 2 replica(s)
+[10:03:12] Kubernetes removed: vllm-6f7d9c8b4-ghi56 (cost rank 1 of 3, 1 = lowest)
+[PASS] removed the COLD pod
+```
+
+Three trials, the cold pod rotating, three passes. Then three baseline trials with the controller off; two of the three remove a warm or hot pod, one happens to remove the cold one. The summary:
+
+```
+  cache-aware  coldest pod removed in 3/3 trials
+  baseline     coldest pod removed in 1/3 trials
+  PASS: cache-aware scale-in removed the coldest replica every time
+```
+
+Goal 1 is done, and `results/scale_in_trials.csv` has the six rows. Decision: proceed to the benchmark. If a cache-aware trial had failed with the right pod table (the lowest-cost pod clearly marked, but another removed), you would check `kubectl version`, raise `SETTLE`, and rerun that trial before anything else.
+
+### 10:15 · The benchmark (stage 5)
+
+In the dashboard pane:
+
+```bash
+stage5_benchmark/dashboard.sh
+```
+
+and in the main pane:
+
+```bash
+stage5_benchmark/eval.sh
+```
+
+The script starts the metrics sampler and, because no `GATEWAY_URL` is set, the built-in router on port 8081. Trial 1, baseline: pods restart, the load generator starts at four requests per second, and on the dashboard at `http://localhost:8080` the three hit-rate lines climb from zero over the two-minute warm-up: one towards 0.9, one towards 0.5, one staying low, because the router keeps each prefix on one pod and the popular prefixes are few. The phase chip reads *warming*, then *measuring*; the "last scale-in" card shows which pod went and its rank. In Grafana at `http://localhost:3000/d/cache-aware-scale-in`, a red line marks the scale-in on every panel.
+
+What you watch for: in a baseline trial where the hot pod was removed, the survivors' hit-rate lines dip right after the red line and recover over the next minute, and the TTFT panel spikes. In a cache-aware trial, nothing visible happens at the red line. That picture *is* the result, before any table.
+
+Six trials take about fifty minutes. The trials table at the bottom of the dashboard fills in one row at a time. At the end:
+
+```
+| metric                                  | default scale-in | cache-aware    | change  |
+| TTFT p90, first 30 s after scale-in     | 312 ms ± 95 ms   | 118 ms ± 11 ms | -62.2%  |
+| TTFT p90, whole measure window          | 184 ms ± 40 ms   | 109 ms ± 8 ms  | -40.8%  |
+| prefix-cache hit rate on survivors      | 46.3%            | 66.1%          | +42.8%  |
+| coldest pod removed                     | 1/3 trials       | 3/3 trials     |         |
+
+  6 trials checked
+  PASS: benchmark data is usable
+```
+
+The large standard deviation on the baseline is the one trial that happened to remove the cold pod; the per-trial table shows it. Decision: the numbers are quotable. Commit `results/`.
+
+### 11:20 · If something had gone wrong instead
+
+- The load generator printing `status=0` errors: the router or gateway is not reachable from where the script runs; `curl $GATEWAY_URL/v1/models` tells you in one line.
+- Both arms identical in every trial: look at the warm-up hit rates on the dashboard. If all three lines are similar, the traffic is not skewed enough or the router is not sticky; lower `GROUPS` to 8 and rerun one pair of trials.
+- A cache-aware trial with rank 2 or 3: the annotation was not on the pod when the scale happened. `SETTLE=60`.
+
+### 11:30 · The N-body benchmarks (Part VII)
+
+```bash
+kubectl scale deploy -n vllm vllm --replicas=0
+stage6_final/nbody_a100.sh
+```
+
+The script refuses to start while vLLM still holds the GPU, which is why the first line exists. Then about an hour of output: CPU scaling, Barnes–Hut crossover, GPU scaling for naive and tiled kernels, the block-size sweep, energy conservation, Nsight Compute counters, and finally the regenerated README with the GPU rows filled in. It ends with the commit on a results branch and the push command.
+
+### 12:45 · Handing the GPU back
+
+Commit this repository's `results/`, push the N-body branch, copy the "Numbers for the resume bullet" block from `results/RESULTS.md`, and stop the machine. Everything else can be done from a laptop.
+
+### What to remember
+
+- Three decision points: metric names found (stage 3), coldest pod removed 3/3 (stage 4), benchmark data usable (stage 5). Each has a one-line pass condition.
+- The dashboard hit-rate lines at the red scale-in marker show the result before any table does.
+- A baseline trial that removes the cold pod is expected and shows up as a wide standard deviation.
+- Scale vLLM to zero before the N-body run.
+
+
 ## Part VII · The N-body side project
 
 The GPU day has a second job. A separate repository, `colmeabhi/parallelized-nbody-simulation-cuda-cpp`, is a complete gravitational N-body simulation with CPU and CUDA solvers, and its README has a results table whose GPU rows say "not measured yet". The same rented A100 fills them in, so the runbook includes it.
@@ -1015,6 +1382,57 @@ A project is only as credible as its stated limits. These are the ones that matt
 4. **Node-spread guard** as described above.
 5. **A monitoring-off control pair** in the benchmark, so the "it does not disturb the measurement" argument becomes a measured row.
 6. **Production shape.** Liveness and readiness probes on the controller pod, two alert rules (scrape errors rising, a pod without a cost for over a minute), a watch-based pod list instead of polling, an image published from CI.
+
+
+## Questions people ask
+
+**Why not just share the KV cache between pods so nothing is lost?**
+Sharing GPU memory across machines needs a fast interconnect and a transfer layer (llm-d is working on exactly this with KV-cache offload and transfer). It is heavier, newer, and solves a different problem: moving cache. This project solves the cheaper one: not throwing away the best cache when you did not need to. The two compose.
+
+**Why not let the router handle it?**
+The router decides where new requests go; it is not consulted when Kubernetes deletes a pod. Until the deletion happens, the router has no reason to move anything, and after it happens, the cache is gone. A pre-drain hint from the controller to the router is the natural extension (Limitations chapter).
+
+**Why not use an autoscaler like the HPA or KEDA?**
+Autoscalers decide *how many* replicas to run, not *which* ones to remove. `pod-deletion-cost` is the knob Kubernetes provides for the second question, and it works underneath any autoscaler.
+
+**Why not delete the pod from the controller directly?**
+It would race the ReplicaSet controller, which is also deleting pods to reach the new replica count, and both might delete one each. Ranking and letting Kubernetes delete is race-free and needs no delete permission.
+
+**Why hit rate and usage, and not the number of requests in flight?**
+In-flight requests are protected by the termination grace period: a deleted pod gets 30 seconds to finish them. The cache is the thing nothing protects.
+
+**Why a dead band of 25 and not write every cycle?**
+The ranking only has to be ordered correctly. Kubernetes documentation asks for this annotation not to be updated on every metric tick, because each update is an API-server write. The dead band keeps writes rare without changing the order.
+
+**Why five seconds?**
+Fast enough that a cost is never more than one cache warm-up old; slow enough that three pods cost nothing to poll. On a fleet of hundreds you would use a watch and Prometheus; the parsing and scoring would not change.
+
+**Why not read the annotations in Grafana instead of adding metrics to the controller?**
+kube-state-metrics does not expose arbitrary annotations, and reading them would need another exporter anyway. The controller already has the numbers; publishing them is 80 lines.
+
+**Does the controller work with llm-d?**
+Yes, provided llm-d's decode pods are an ordinary Deployment. Point `NAMESPACE`, `SELECTOR` and `DEPLOYMENT` at them. The controller never talks to the gateway. llm-d's disaggregated layouts use other controllers, where the annotation does not apply.
+
+**What if the three pods are on different nodes?**
+Cost ordering comes before the node-spreading rule, so the controller could leave two pods on one node and none on another. A guard that caps the cost gap when it would break spreading is listed as future work.
+
+**Why restart the pods before every benchmark trial?**
+So they have the same age. Kubernetes' default tie-break prefers the most recently ready pod, which after a scale-out is also the coldest; without the restart the baseline would look smart by accident.
+
+**Why is the baseline sometimes as good as the controller?**
+Because with three pods, a blind choice is right one time in three. Over several trials the averages separate; the per-trial table shows which trial it was.
+
+**Why fake pods at all?**
+Because the only part that needs a GPU is the GPU. The parsing, scoring, annotation writing, the ReplicaSet's behaviour, the load generator, the report and the dashboard all run against a 180-line fake in seconds, so bugs are found on a laptop and the rented hours are spent measuring.
+
+**Does monitoring slow the benchmark down?**
+No. Prometheus does one small HTTP GET per pod every 15 seconds, the sampler one every 2 seconds; rendering the page is text formatting in the server's front end. Everything runs in both arms and cancels. The only mechanism that could matter is host CPU on a small machine; `kubectl top pods` answers that.
+
+**Why both inference-perf and your own load generator?**
+inference-perf is the standard tool and belongs on the resume; its config schema has moved between releases and could not be verified in advance. The built-in generator implements the same protocol so a mismatch costs minutes, not the day.
+
+**What does the resume bullet say at the end?**
+Built a Kubernetes controller that scores each vLLM replica's KV-cache value from its prefix-cache metrics and sets `pod-deletion-cost` so scale-in removes the coldest replica; on Llama 3 8B across 3 A100 replicas, cut post-scale-in TTFT p90 from X ms to Y ms and raised the surviving replicas' prefix-cache hit rate from A % to B % over N trials; verified the coldest replica was removed in N/N scale-downs. The letters are filled from `results/RESULTS.md`.
 
 
 ## Glossary
