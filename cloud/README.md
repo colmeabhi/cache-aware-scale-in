@@ -18,6 +18,24 @@ flowchart LR
   R -- "6 destroy" --> P
 ```
 
+## No SSH box? Modal
+
+`cloud/modal_bench.py` runs the stage 5 benchmark on Modal GPU containers
+instead: one 3×A100 container per trial, three `vllm serve` processes, the
+repo's router, scoring and load generator in-process, and scale-in emulated as
+"remove from the ring, then SIGTERM". No Kubernetes, so it measures the effect
+of the choice, not that Kubernetes honours the annotation (stages 2 and 4 do).
+
+```bash
+uv tool install modal && modal setup
+modal run cloud/modal_bench.py                                       # smoke, ~10 min
+modal run cloud/modal_bench.py --trials 3 --warm 120 --measure 120  # full
+```
+
+What the first runs found (devel image for `nvcc`, the `_total` metric names,
+hit rates that saturate under stage 5's default traffic) is in the book,
+Part VI, "Running it on Modal".
+
 ## Two ways to start it
 
 **From a laptop**
