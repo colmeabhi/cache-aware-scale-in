@@ -29,6 +29,7 @@ routing, k3s, Python. Benchmarked with `kubernetes-sigs/inference-perf`
 | run the GPU day end to end | `stage6_final/run_day.sh` (see the runbook, guide.md section 6) |
 | watch a benchmark live | `stage5_benchmark/dashboard.sh` + an SSH tunnel (guide.md section 7) |
 | full observability: Prometheus, Loki, Grafana | `monitoring/setup.sh`, then `monitoring/open.sh` ([monitoring/README.md](monitoring/README.md)) |
+| run the stage 5 benchmark on Modal GPUs, no Kubernetes | `modal run cloud/modal_bench.py` ([book Part VI](book/10-running-anywhere.md#running-it-on-modal-no-kubernetes)) |
 | paste credentials and have the whole GPU day run itself | `cloud/.env` + `cloud/run_remote.sh`, or the *GPU benchmark* GitHub workflow ([cloud/README.md](cloud/README.md)) |
 | read the whole thing as a book, from zero | [book/README.md](book/README.md) |
 
@@ -39,7 +40,7 @@ before it and adds one new capability plus an evaluation that proves it.
 
 | stage | folder | needs | adds | eval proves |
 |---|---|---|---|---|
-| 1 | `stage1_local_prototype/` | laptop | metric parsing, scoring, fake vLLM pods, the control loop | costs come out 700 / 550 / 50 for the example pods; unit tests (30 across stages 1, 3, 5) |
+| 1 | `stage1_local_prototype/` | laptop | metric parsing, scoring, fake vLLM pods, the control loop | costs come out 700 / 550 / 50 for the example pods; unit tests (39 across stages 1, 3, 5) |
 | 2 | `stage2_mock_cluster/` | kind / k3d / k3s | Kubernetes backend, annotation patching, the scale-in trial harness | scaling 3 → 2 removes the lowest-cost (fake) pod every time; the default does not |
 | 3 | `stage3_vllm_single/` | 1 GPU | real vLLM, metric-name discovery, prefix-heavy load generator | prefix caching works on this vLLM version (hit rate > 0.5) |
 | 4 | `stage4_scale_in_real/` | 3 GPUs | real skewed warm-up (hot / warm / cold pods) | **GPU-day goal 1:** the real scale-in removes the coldest replica |
