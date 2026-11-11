@@ -41,6 +41,24 @@ def test_new_style_names():
     assert s.has_cache_signal
 
 
+TOTAL_STYLE = """
+# TYPE vllm:prefix_cache_queries_total counter
+vllm:prefix_cache_queries_total{engine="0",model_name="m"} 2406.0
+vllm:prefix_cache_queries_created{engine="0",model_name="m"} 1.79e+09
+vllm:prefix_cache_hits_total{engine="0",model_name="m"} 1200.0
+vllm:prefix_cache_hits_created{engine="0",model_name="m"} 1.79e+09
+vllm:kv_cache_usage_perc{engine="0",model_name="m"} 0.1
+"""
+
+
+def test_total_suffixed_counters_vllm_0_32():
+    # Real page shape from vLLM 0.32.0: counters end in _total, plus *_created gauges.
+    s = sample_from_text(TOTAL_STYLE)
+    assert s.prefix_queries == 2406 and s.prefix_hits == 1200
+    assert s.found["prefix_queries"] == "vllm:prefix_cache_queries_total"
+    assert s.has_cache_signal
+
+
 def test_gpu_prefixed_names():
     s = sample_from_text(GPU_STYLE)
     assert s.kv_usage == 0.2

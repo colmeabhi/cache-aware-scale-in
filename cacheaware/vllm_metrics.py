@@ -12,7 +12,8 @@ Two things make this slightly annoying:
 
 1. The metric names changed between vLLM versions (the V0 engine had a
    ``gpu_prefix_cache_hit_rate`` gauge; the V1 engine replaced it with two
-   counters, first called ``gpu_prefix_cache_*`` and later ``prefix_cache_*``).
+   counters, first called ``gpu_prefix_cache_*``, then ``prefix_cache_*``, and
+   from vLLM 0.32 ``prefix_cache_*_total``).
    This module knows every spelling and records which one it found, so the
    stage 3 "discover metrics" step can tell you what your vLLM speaks.
 
@@ -38,8 +39,12 @@ from dataclasses import dataclass, field
 # The first name that exists on the page is the one we use.
 NAME_CANDIDATES: dict[str, list[str]] = {
     "kv_usage":       ["vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc"],
-    "prefix_queries": ["vllm:prefix_cache_queries", "vllm:gpu_prefix_cache_queries"],
-    "prefix_hits":    ["vllm:prefix_cache_hits", "vllm:gpu_prefix_cache_hits"],
+    # vLLM 0.32 (verified on Modal, 2026-11) exposes counters with the standard
+    # Prometheus `_total` suffix; earlier V1 builds used the bare name.
+    "prefix_queries": ["vllm:prefix_cache_queries_total", "vllm:prefix_cache_queries",
+                       "vllm:gpu_prefix_cache_queries"],
+    "prefix_hits":    ["vllm:prefix_cache_hits_total", "vllm:prefix_cache_hits",
+                       "vllm:gpu_prefix_cache_hits"],
     "hit_rate_gauge": ["vllm:gpu_prefix_cache_hit_rate"],   # old (V0 engine) vLLM only
     "running":        ["vllm:num_requests_running"],
     "waiting":        ["vllm:num_requests_waiting"],
